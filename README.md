@@ -5,13 +5,14 @@ A Model Context Protocol (MCP) server for DigiKey's Product Search API using Fas
 ## Requirements
 
 - Python 3.10+
+- uv package manager
 - DigiKey API credentials (CLIENT_ID and CLIENT_SECRET)
 
 ## Setup
 
 ### 1. Install dependencies
 ```bash
-pip install fastmcp requests python-dotenv
+uv sync
 ```
 
 ### 2. Set up environment variables
@@ -26,7 +27,7 @@ Set `USE_SANDBOX=true` to use DigiKey's sandbox environment for testing.
 
 ### 3. Run the server
 ```bash
-python digikey_mcp_server.py
+uv run python digikey_mcp_server.py
 ```
 
 ## Available Tools
@@ -99,8 +100,8 @@ Add this to your Claude Desktop config (`~/Library/Application Support/Claude/cl
 {
   "mcpServers": {
     "digikey": {
-      "command": "python",
-      "args": ["/path/to/digikey_mcp_server.py"],
+      "command": "uv",
+      "args": ["run", "python", "digikey_mcp_server.py"],
       "cwd": "/path/to/project"
     }
   }
