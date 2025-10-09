@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-USE_SANDBOX = os.getenv("USE_SANDBOX", "true").lower() == "false"
+# USE_SANDBOX: "true" means use sandbox, "false" or unset means use production
+USE_SANDBOX = os.getenv("USE_SANDBOX", "false").lower() == "true"
 
 # DigiKey OAuth2 token endpoint
 if USE_SANDBOX:
