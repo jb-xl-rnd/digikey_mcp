@@ -224,7 +224,7 @@ def get_product_pricing(product_number: str, customer_id: str = "0", requested_q
 @mcp.tool()
 def get_digi_reel_pricing(product_number: str, requested_quantity: int, customer_id: str = "0"):
     """Get DigiReel pricing for a product.
-    
+
     Args:
         product_number: DigiKey product number (must be DigiReel compatible)
         requested_quantity: Quantity for DigiReel pricing
@@ -232,10 +232,67 @@ def get_digi_reel_pricing(product_number: str, requested_quantity: int, customer
     """
     url = f"{API_BASE}/products/v4/search/{product_number}/digireelpricing"
     headers = _get_headers(customer_id)
-    
+
     params = {"requestedQuantity": requested_quantity}
     url += "?" + "&".join([f"{k}={v}" for k, v in params.items()])
-    
+
+    return _make_request("GET", url, headers)
+
+@mcp.tool()
+def get_pricing_by_quantity(product_number: str, requested_quantity: int, manufacturer_id: str = None, customer_id: str = "0"):
+    """Get intelligent pricing options for a product at a specific quantity.
+
+    Returns up to 4 pricing scenarios: exact quantity, minimum order quantity,
+    maximum order quantity, and better value (standard package with lower total cost).
+    Essential for BOM cost optimization.
+
+    Args:
+        product_number: DigiKey or manufacturer part number
+        requested_quantity: Desired quantity for pricing
+        manufacturer_id: Optional manufacturer ID for disambiguation (e.g., for common parts like CR2032)
+        customer_id: Customer ID for MyPricing (default: "0")
+    """
+    url = f"{API_BASE}/products/v4/search/{product_number}/pricingbyquantity/{requested_quantity}"
+    headers = _get_headers(customer_id)
+
+    # Add manufacturer ID if provided for disambiguation
+    if manufacturer_id:
+        url += f"?manufacturerId={manufacturer_id}"
+
+    return _make_request("GET", url, headers)
+
+@mcp.tool()
+def get_alternate_packaging(product_number: str, customer_id: str = "0"):
+    """Get alternate packaging options for a product.
+
+    Returns the same product in different packaging types (e.g., Tape & Reel,
+    Cut Tape, Tube, Tray, Bulk, Digi-Reel) with pricing for each option.
+    Essential for procurement flexibility and cost optimization.
+
+    Args:
+        product_number: DigiKey or manufacturer part number
+        customer_id: Customer ID for MyPricing (default: "0")
+    """
+    url = f"{API_BASE}/products/v4/search/{product_number}/alternatepackaging"
+    headers = _get_headers(customer_id)
+
+    return _make_request("GET", url, headers)
+
+@mcp.tool()
+def get_product_associations(product_number: str, customer_id: str = "0"):
+    """Get associated products that are commonly used together.
+
+    Returns products that are related or complementary to the queried product.
+    Different from substitutions - associations are for mating connectors,
+    required support components, etc. Valuable for complete BOM building.
+
+    Args:
+        product_number: DigiKey or manufacturer part number
+        customer_id: Customer ID for MyPricing (default: "0")
+    """
+    url = f"{API_BASE}/products/v4/search/{product_number}/associations"
+    headers = _get_headers(customer_id)
+
     return _make_request("GET", url, headers)
 
 
