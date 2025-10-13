@@ -5,6 +5,12 @@ test_client.py
 .env.local
 .env.*.local
 
+# UV lock file (can be regenerated)
+uv.lock
+
+# Reference documentation (large files, can be downloaded)
+useful_llm_context/
+
 # Python
 __pycache__/
 *.py[cod]
