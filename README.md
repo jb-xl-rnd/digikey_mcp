@@ -6,6 +6,19 @@ A Model Context Protocol (MCP) server for DigiKey's Product Search API using Fas
 
 This fork extends the original implementation with production-ready features for professional BOM management:
 
+### 🔧 Critical Bug Fixes
+
+**Fixed OAuth Token Expiration (BREAKING BUG):**
+- **Original Issue**: Server would fail after ~1 hour when OAuth token expired
+- **Our Fix**: Automatic token refresh with 5-minute buffer before expiration
+- **Impact**: Server now runs reliably 24/7 without authentication failures
+- Thread-safe token management with retry logic for 401 errors
+
+**Enhanced Error Handling:**
+- Graceful 404 handling with helpful error messages
+- Automatic retry on token expiration (401)
+- Better validation for empty API responses
+
 ### 🎯 Enhanced API Coverage (86% of DigiKey API)
 
 **New Endpoints:**
@@ -16,19 +29,15 @@ This fork extends the original implementation with production-ready features for
 ### 🚀 Context Optimization
 
 **Smart Token Management:**
-- **Compact mode** (enabled by default) - 90% reduction in response size
+- **Compact mode** (enabled by default for ALL endpoints) - 90% reduction in response size
   - Strips verbose fields, flattens nested objects, removes null values
   - Extracts only essential info: part numbers, pricing, stock, URLs
+  - Now available on: `keyword_search`, `product_details`, `search_product_substitutions`, `get_product_media`, `get_alternate_packaging`, `get_product_associations`
 - **Enforced limits** on all endpoints to prevent context flooding
   - Search: max 50 results (default 5)
   - Manufacturers/Categories: max 500 (default 100)
   - Media: max 50 per type (default 10)
 - **Intelligent field extraction** from nested DigiKey API responses
-
-### 📚 Comprehensive Documentation
-- `EXTENSION_PLAN.md` - Full API analysis and implementation roadmap
-- `IMPLEMENTATION_SUMMARY.md` - Executive summary and impact analysis
-- Enhanced README with context optimization best practices
 
 ---
 
@@ -291,4 +300,8 @@ uv sync
 
 ## License
 
-Uses DigiKey API under their [Terms of Service](https://developer.digikey.com/terms-and-conditions)
+Licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+This project:
+- Uses FastMCP (Apache License 2.0)
+- Accesses the DigiKey API under their [Terms of Service](https://developer.digikey.com/terms-and-conditions)

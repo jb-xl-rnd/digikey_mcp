@@ -4,6 +4,8 @@ import logging
 from fastmcp import FastMCP
 from dotenv import load_dotenv
 import requests
+from datetime import datetime, timedelta
+from threading import Lock
 
 # Configure logging
 logging.basicConfig(
@@ -30,39 +32,65 @@ else:
 # Initialize FastMCP server
 mcp = FastMCP("DigiKey MCP Server")
 
-def get_access_token():
-    """Get OAuth2 access token from DigiKey."""
-    # Check if credentials are loaded
-    if not CLIENT_ID or not CLIENT_SECRET:
-        raise ValueError("CLIENT_ID and CLIENT_SECRET must be set in .env file")
-    
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    
-    endpoint = "SANDBOX" if USE_SANDBOX else "PRODUCTION"
-    logger.info(f"Requesting token from {endpoint} with CLIENT_ID: {CLIENT_ID[:10]}...")
-    resp = requests.post(TOKEN_URL, data=data, headers=headers)
-    
-    if resp.status_code != 200:
-        logger.error(f"OAuth error: {resp.status_code} - {resp.text}")
-        resp.raise_for_status()
-    
-    logger.info("Successfully obtained access token")
-    return resp.json()["access_token"]
+# Token management with automatic refresh
+class TokenManager:
+    """Manages OAuth2 token lifecycle with automatic refresh."""
 
-# Get access token at startup
+    def __init__(self):
+        self.access_token = None
+        self.token_expires_at = None
+        self.lock = Lock()
+
+    def get_token(self):
+        """Get a valid access token, refreshing if necessary."""
+        with self.lock:
+            # If token is missing or expired (with 5min buffer), refresh it
+            if self.access_token is None or self.token_expires_at is None or \
+               datetime.now() >= self.token_expires_at - timedelta(minutes=5):
+                self._refresh_token()
+            return self.access_token
+
+    def _refresh_token(self):
+        """Fetch a new access token from DigiKey."""
+        if not CLIENT_ID or not CLIENT_SECRET:
+            raise ValueError("CLIENT_ID and CLIENT_SECRET must be set in .env file")
+
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        endpoint = "SANDBOX" if USE_SANDBOX else "PRODUCTION"
+        logger.info(f"Requesting token from {endpoint} with CLIENT_ID: {CLIENT_ID[:10]}...")
+
+        resp = requests.post(TOKEN_URL, data=data, headers=headers)
+
+        if resp.status_code != 200:
+            logger.error(f"OAuth error: {resp.status_code} - {resp.text}")
+            resp.raise_for_status()
+
+        token_data = resp.json()
+        self.access_token = token_data["access_token"]
+
+        # DigiKey tokens typically expire in 3600 seconds (1 hour)
+        expires_in = token_data.get("expires_in", 3600)
+        self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+
+        logger.info(f"Successfully obtained access token (expires in {expires_in}s)")
+
+# Initialize token manager
 logger.info("=== STARTING DIGIKEY MCP SERVER ===")
-access_token = get_access_token()
+token_manager = TokenManager()
+# Get initial token at startup
+token_manager.get_token()
 logger.info("=== SERVER READY ===")
 
 def _get_headers(customer_id: str = "0"):
     """Get standard headers for DigiKey API requests."""
     return {
-        "Authorization": f"Bearer {access_token}",
+        "Authorization": f"Bearer {token_manager.get_token()}",
         "X-DIGIKEY-Client-Id": CLIENT_ID,
         "Content-Type": "application/json",
         "X-DIGIKEY-Locale-Site": "US",
@@ -71,8 +99,8 @@ def _get_headers(customer_id: str = "0"):
         "X-DIGIKEY-Customer-Id": customer_id,
     }
 
-def _make_request(method: str, url: str, headers: dict, data: dict = None) -> dict:
-    """Make an API request with error handling and logging."""
+def _make_request(method: str, url: str, headers: dict, data: dict = None, retry_count: int = 0) -> dict:
+    """Make an API request with error handling, logging, and automatic retry on 401."""
     logger.info(f"Making {method} request to {url}")
     logger.debug(f"Headers: {json.dumps({k: v for k, v in headers.items() if 'Authorization' not in k}, indent=2)}")
     if data:
@@ -84,9 +112,26 @@ def _make_request(method: str, url: str, headers: dict, data: dict = None) -> di
         resp = requests.post(url, headers=headers, json=data)
 
     logger.info(f"Response status: {resp.status_code}")
+
+    # Handle 401 Unauthorized - token might have expired
+    if resp.status_code == 401 and retry_count == 0:
+        logger.warning("Got 401 Unauthorized, forcing token refresh and retrying...")
+        token_manager.token_expires_at = datetime.now()  # Force refresh
+        new_headers = headers.copy()
+        new_headers["Authorization"] = f"Bearer {token_manager.get_token()}"
+        return _make_request(method, url, new_headers, data, retry_count=1)
+
+    if resp.status_code == 404:
+        logger.error(f"API 404 error: {url} not found")
+        return {"error": "Not Found", "message": f"Endpoint {url} returned 404. This may be an incorrect part number or unsupported endpoint.", "status_code": 404}
+
     if resp.status_code != 200:
         logger.error(f"API error: {resp.status_code} - {resp.text}")
-        resp.raise_for_status()
+        try:
+            error_data = resp.json()
+            return {"error": "API Error", "message": error_data, "status_code": resp.status_code}
+        except:
+            return {"error": "API Error", "message": resp.text, "status_code": resp.status_code}
 
     return resp.json()
 
@@ -163,6 +208,32 @@ def _compact_search_result(result: dict, compact: bool = True) -> dict:
 
     return compact_result
 
+def _compact_media_result(result: dict, compact: bool = True) -> dict:
+    """Reduce media result size by keeping only essential media info."""
+    if not compact:
+        return result
+
+    compact_result = {}
+
+    # For each media type, keep only the essential fields
+    for media_type in ["Photos", "Documents", "Videos"]:
+        if media_type in result and isinstance(result[media_type], list):
+            compact_items = []
+            for item in result[media_type]:
+                compact_item = {
+                    "Url": item.get("Url") or item.get("DocumentUrl") or item.get("VideoUrl"),
+                    "Description": item.get("Description") or item.get("Title"),
+                }
+                # Only include type for documents
+                if media_type == "Documents" and item.get("DocumentType"):
+                    compact_item["Type"] = item.get("DocumentType")
+                # Remove None values
+                compact_item = {k: v for k, v in compact_item.items() if v is not None}
+                compact_items.append(compact_item)
+            compact_result[media_type] = compact_items
+
+    return compact_result
+
 @mcp.tool()
 def keyword_search(keywords: str, limit: int = 5, manufacturer_id: str = None, category_id: str = None, search_options: str = None, sort_field: str = None, sort_order: str = "Ascending", compact: bool = True):
     """Search DigiKey products by keyword.
@@ -232,8 +303,22 @@ def product_details(product_number: str, manufacturer_id: str = None, customer_i
 
     result = _make_request("GET", url, headers)
 
+    # Check if result has error
+    if isinstance(result, dict) and "error" in result:
+        return result
+
+    # Check if result is empty or null
+    if not result:
+        logger.warning(f"Product details returned empty response for {product_number}")
+        return {"error": "Empty Response", "message": f"No product details found for {product_number}. Try using the DigiKey part number (format: XXX-XXX-ND) instead of manufacturer part number."}
+
     if compact and isinstance(result, dict):
-        return _compact_product(result)
+        compacted = _compact_product(result)
+        # If compaction resulted in empty dict, return full result with warning
+        if not compacted or len(compacted) == 0:
+            logger.warning(f"Compaction resulted in empty dict, returning full result")
+            return result
+        return compacted
 
     return result
 
@@ -336,12 +421,13 @@ def search_product_substitutions(product_number: str, limit: int = 10, search_op
     return result
 
 @mcp.tool()
-def get_product_media(product_number: str, max_items_per_type: int = 10):
+def get_product_media(product_number: str, max_items_per_type: int = 10, compact: bool = True):
     """Get media (images, documents, videos) for a product.
 
     Args:
         product_number: The product to get media for
         max_items_per_type: Maximum items to return per media type (default: 10, max: 50)
+        compact: Return only essential fields (URL, description) to reduce context usage (default: True)
 
     Note: Products can have dozens of photos, documents, and videos. This limit
     prevents context overflow by capping each media type separately.
@@ -362,7 +448,7 @@ def get_product_media(product_number: str, max_items_per_type: int = 10):
                     logger.info(f"Limiting {media_type} from {len(result[media_type])} to {max_items_per_type}")
                     result[media_type] = result[media_type][:max_items_per_type]
 
-    return result
+    return _compact_media_result(result, compact)
 
 @mcp.tool()
 def get_product_pricing(product_number: str, customer_id: str = "0", requested_quantity: int = 1):
@@ -422,7 +508,7 @@ def get_pricing_by_quantity(product_number: str, requested_quantity: int, manufa
     return _make_request("GET", url, headers)
 
 @mcp.tool()
-def get_alternate_packaging(product_number: str, customer_id: str = "0"):
+def get_alternate_packaging(product_number: str, customer_id: str = "0", compact: bool = True):
     """Get alternate packaging options for a product.
 
     Returns the same product in different packaging types (e.g., Tape & Reel,
@@ -432,14 +518,29 @@ def get_alternate_packaging(product_number: str, customer_id: str = "0"):
     Args:
         product_number: DigiKey or manufacturer part number
         customer_id: Customer ID for MyPricing (default: "0")
+        compact: Return only essential fields to reduce context usage (default: True)
     """
     url = f"{API_BASE}/products/v4/search/{product_number}/alternatepackaging"
     headers = _get_headers(customer_id)
 
-    return _make_request("GET", url, headers)
+    result = _make_request("GET", url, headers)
+
+    # Check for errors
+    if isinstance(result, dict) and "error" in result:
+        return result
+
+    # Apply compaction to alternate packaging results
+    # The API returns nested structure: AlternatePackagings.AlternatePackaging[]
+    if compact and isinstance(result, dict):
+        if "AlternatePackagings" in result and "AlternatePackaging" in result["AlternatePackagings"]:
+            result["AlternatePackagings"]["AlternatePackaging"] = [_compact_product(p) for p in result["AlternatePackagings"]["AlternatePackaging"]]
+        elif "AlternatePackagingProducts" in result:
+            result["AlternatePackagingProducts"] = [_compact_product(p) for p in result["AlternatePackagingProducts"]]
+
+    return result
 
 @mcp.tool()
-def get_product_associations(product_number: str, customer_id: str = "0"):
+def get_product_associations(product_number: str, customer_id: str = "0", compact: bool = True):
     """Get associated products that are commonly used together.
 
     Returns products that are related or complementary to the queried product.
@@ -449,11 +550,26 @@ def get_product_associations(product_number: str, customer_id: str = "0"):
     Args:
         product_number: DigiKey or manufacturer part number
         customer_id: Customer ID for MyPricing (default: "0")
+        compact: Return only essential fields to reduce context usage (default: True)
     """
     url = f"{API_BASE}/products/v4/search/{product_number}/associations"
     headers = _get_headers(customer_id)
 
-    return _make_request("GET", url, headers)
+    result = _make_request("GET", url, headers)
+
+    # Check for errors
+    if isinstance(result, dict) and "error" in result:
+        return result
+
+    # Apply compaction to associations results
+    # API returns: ProductAssociations.{Kits, MatingProducts, AssociatedProducts, ForUseWithProducts}
+    if compact and isinstance(result, dict) and "ProductAssociations" in result:
+        assoc = result["ProductAssociations"]
+        for key in ["Kits", "MatingProducts", "AssociatedProducts", "ForUseWithProducts"]:
+            if key in assoc and isinstance(assoc[key], list):
+                assoc[key] = [_compact_product(p) for p in assoc[key]]
+
+    return result
 
 
 def main():
