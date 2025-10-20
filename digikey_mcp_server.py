@@ -4,6 +4,8 @@ import logging
 from fastmcp import FastMCP
 from dotenv import load_dotenv
 import requests
+from datetime import datetime, timedelta
+from threading import Lock
 
 # Configure logging
 logging.basicConfig(
@@ -29,39 +31,68 @@ else:
 # Initialize FastMCP server
 mcp = FastMCP("DigiKey MCP Server")
 
-def get_access_token():
-    """Get OAuth2 access token from DigiKey."""
-    # Check if credentials are loaded
-    if not CLIENT_ID or not CLIENT_SECRET:
-        raise ValueError("CLIENT_ID and CLIENT_SECRET must be set in .env file")
-    
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    
-    endpoint = "SANDBOX" if USE_SANDBOX else "PRODUCTION"
-    logger.info(f"Requesting token from {endpoint} with CLIENT_ID: {CLIENT_ID[:10]}...")
-    resp = requests.post(TOKEN_URL, data=data, headers=headers)
-    
-    if resp.status_code != 200:
-        logger.error(f"OAuth error: {resp.status_code} - {resp.text}")
-        resp.raise_for_status()
-    
-    logger.info("Successfully obtained access token")
-    return resp.json()["access_token"]
+# Token management with automatic refresh
+class TokenManager:
+    """Manages OAuth2 token lifecycle with automatic refresh.
 
-# Get access token at startup
+    Fixes the critical bug where tokens expire after ~1 hour causing 401 errors.
+    """
+
+    def __init__(self):
+        self.access_token = None
+        self.token_expires_at = None
+        self.lock = Lock()
+
+    def get_token(self):
+        """Get a valid access token, refreshing if necessary."""
+        with self.lock:
+            # If token is missing or expired (with 5min buffer), refresh it
+            if self.access_token is None or self.token_expires_at is None or \
+               datetime.now() >= self.token_expires_at - timedelta(minutes=5):
+                self._refresh_token()
+            return self.access_token
+
+    def _refresh_token(self):
+        """Fetch a new access token from DigiKey."""
+        if not CLIENT_ID or not CLIENT_SECRET:
+            raise ValueError("CLIENT_ID and CLIENT_SECRET must be set in .env file")
+
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        endpoint = "SANDBOX" if USE_SANDBOX else "PRODUCTION"
+        logger.info(f"Requesting token from {endpoint} with CLIENT_ID: {CLIENT_ID[:10]}...")
+
+        resp = requests.post(TOKEN_URL, data=data, headers=headers)
+
+        if resp.status_code != 200:
+            logger.error(f"OAuth error: {resp.status_code} - {resp.text}")
+            resp.raise_for_status()
+
+        token_data = resp.json()
+        self.access_token = token_data["access_token"]
+
+        # DigiKey tokens typically expire in 3600 seconds (1 hour)
+        expires_in = token_data.get("expires_in", 3600)
+        self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+
+        logger.info(f"Successfully obtained access token (expires in {expires_in}s)")
+
+# Initialize token manager
 logger.info("=== STARTING DIGIKEY MCP SERVER ===")
-access_token = get_access_token()
+token_manager = TokenManager()
+# Get initial token at startup
+token_manager.get_token()
 logger.info("=== SERVER READY ===")
 
 def _get_headers(customer_id: str = "0"):
     """Get standard headers for DigiKey API requests."""
     return {
-        "Authorization": f"Bearer {access_token}",
+        "Authorization": f"Bearer {token_manager.get_token()}",
         "X-DIGIKEY-Client-Id": CLIENT_ID,
         "Content-Type": "application/json",
         "X-DIGIKEY-Locale-Site": "US",
