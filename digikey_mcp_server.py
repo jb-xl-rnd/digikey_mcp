@@ -77,90 +77,221 @@ def _make_request(method: str, url: str, headers: dict, data: dict = None) -> di
     logger.debug(f"Headers: {json.dumps({k: v for k, v in headers.items() if 'Authorization' not in k}, indent=2)}")
     if data:
         logger.debug(f"Request body: {json.dumps(data, indent=2)}")
-    
+
     if method.upper() == "GET":
         resp = requests.get(url, headers=headers)
     else:
         resp = requests.post(url, headers=headers, json=data)
-    
+
     logger.info(f"Response status: {resp.status_code}")
     if resp.status_code != 200:
         logger.error(f"API error: {resp.status_code} - {resp.text}")
         resp.raise_for_status()
-    
+
     return resp.json()
 
+def _compact_product(product: dict) -> dict:
+    """Extract only essential fields from a product to reduce context usage.
+
+    Omits null/None values to save tokens and improve readability.
+    """
+    compact = {}
+
+    # Extract ProductStatus - can be a string or object
+    product_status = product.get("ProductStatus")
+    if isinstance(product_status, dict):
+        product_status = product_status.get("Status")
+
+    # Extract DigiKey part number from ProductVariations (usually first variation)
+    digikey_part = product.get("DigiKeyPartNumber")
+    if not digikey_part and product.get("ProductVariations"):
+        variations = product.get("ProductVariations", [])
+        if variations and len(variations) > 0:
+            digikey_part = variations[0].get("DigiKeyProductNumber")
+
+    # Extract description - can be nested in Description object or at top level
+    product_desc = product.get("ProductDescription")
+    detailed_desc = product.get("DetailedDescription")
+    if not product_desc and isinstance(product.get("Description"), dict):
+        product_desc = product.get("Description", {}).get("ProductDescription")
+        detailed_desc = product.get("Description", {}).get("DetailedDescription")
+
+    # Extract fields, only include if they have a value
+    fields = {
+        "DigiKeyPartNumber": digikey_part,
+        "ManufacturerPartNumber": product.get("ManufacturerProductNumber") or product.get("ManufacturerPartNumber"),
+        "Manufacturer": product.get("Manufacturer", {}).get("Name") if isinstance(product.get("Manufacturer"), dict) else product.get("Manufacturer"),
+        "ProductDescription": product_desc,
+        "DetailedDescription": detailed_desc,
+        "QuantityAvailable": product.get("QuantityAvailable"),
+        "UnitPrice": product.get("UnitPrice"),
+        "MinimumOrderQuantity": product.get("MinimumOrderQuantity"),
+        "Packaging": product.get("Packaging", {}).get("Value") if isinstance(product.get("Packaging"), dict) else product.get("Packaging"),
+        "ProductStatus": product_status,
+        "ProductUrl": product.get("ProductUrl"),
+        "DatasheetUrl": product.get("DatasheetUrl"),
+        "PrimaryPhoto": product.get("PrimaryPhoto") or product.get("PhotoUrl"),
+        "StandardPricing": product.get("StandardPricing"),
+    }
+
+    # Only include fields that have non-null/non-empty values
+    # Keep 0 values for quantities/prices (important for out-of-stock items)
+    for key, value in fields.items():
+        if value is not None and value != "":
+            compact[key] = value
+
+    return compact
+
+def _compact_search_result(result: dict, compact: bool = True) -> dict:
+    """Reduce search result size by removing verbose fields and null values."""
+    if not compact:
+        return result
+
+    compact_result = {}
+
+    # Add ProductsCount if present
+    if result.get("ProductsCount") is not None:
+        compact_result["ProductsCount"] = result.get("ProductsCount")
+
+    # Add ExactManufacturerProductsCount only if not null
+    if result.get("ExactManufacturerProductsCount") is not None:
+        compact_result["ExactManufacturerProductsCount"] = result.get("ExactManufacturerProductsCount")
+
+    # Compact product list
+    if "Products" in result and result["Products"]:
+        compact_result["Products"] = [_compact_product(p) for p in result["Products"]]
+
+    return compact_result
+
 @mcp.tool()
-def keyword_search(keywords: str, limit: int = 5, manufacturer_id: str = None, category_id: str = None, search_options: str = None, sort_field: str = None, sort_order: str = "Ascending"):
+def keyword_search(keywords: str, limit: int = 5, manufacturer_id: str = None, category_id: str = None, search_options: str = None, sort_field: str = None, sort_order: str = "Ascending", compact: bool = True):
     """Search DigiKey products by keyword.
-    
+
     Args:
         keywords: Search terms or part numbers
-        limit: Maximum number of results (default: 5)
+        limit: Maximum number of results (default: 5, max: 50)
         manufacturer_id: Filter by specific manufacturer ID
-        category_id: Filter by specific category ID  
+        category_id: Filter by specific category ID
         search_options: Comma-delimited filters like LeadFree,RoHSCompliant,InStock
         sort_field: Field to sort by. Options: None, Packaging, ProductStatus, DigiKeyProductNumber, ManufacturerProductNumber, Manufacturer, MinimumQuantity, QuantityAvailable, Price, Supplier, PriceManufacturerStandardPackage
         sort_order: Sort direction - Ascending or Descending (default: Ascending)
+        compact: Return compact results with only essential fields to reduce context usage (default: True)
     """
+    # Enforce maximum limit to prevent context flooding
+    if limit > 50:
+        logger.warning(f"Limit {limit} exceeds maximum of 50, capping at 50")
+        limit = 50
+
     url = f"{API_BASE}/products/v4/search/keyword"
     headers = _get_headers()
-    
+
     body = {
         "Keywords": keywords,
         "Limit": limit
     }
-    
+
     if manufacturer_id:
         body["ManufacturerId"] = manufacturer_id
     if category_id:
         body["CategoryId"] = category_id
     if search_options:
         body["SearchOptionList"] = search_options.split(",")
-    
+
     # Add sort options if specified
     if sort_field:
         body["SortOptions"] = {
             "Field": sort_field,
             "SortOrder": sort_order
         }
-    
-    return _make_request("POST", url, headers, body)
+
+    result = _make_request("POST", url, headers, body)
+    return _compact_search_result(result, compact)
 
 @mcp.tool()
-def product_details(product_number: str, manufacturer_id: str = None, customer_id: str = "0"):
+def product_details(product_number: str, manufacturer_id: str = None, customer_id: str = "0", compact: bool = False):
     """Get detailed information for a specific product.
-    
+
     Args:
         product_number: DigiKey or manufacturer part number
         manufacturer_id: Optional manufacturer ID for disambiguation
         customer_id: Customer ID for pricing (default: "0")
+        compact: Return only essential fields to reduce context usage (default: False)
+
+    Note: Use compact=True for general queries. Full details include extensive
+    specifications, parameters, and documents which can use significant context.
     """
     url = f"{API_BASE}/products/v4/search/{product_number}/productdetails"
     headers = _get_headers(customer_id)
-    
+
     params = {}
     if manufacturer_id:
         params["manufacturerId"] = manufacturer_id
-    
+
     if params:
         url += "?" + "&".join([f"{k}={v}" for k, v in params.items()])
-    
-    return _make_request("GET", url, headers)
+
+    result = _make_request("GET", url, headers)
+
+    if compact and isinstance(result, dict):
+        return _compact_product(result)
+
+    return result
 
 @mcp.tool()
-def search_manufacturers():
-    """Search and retrieve all product manufacturers."""
+def search_manufacturers(limit: int = 100):
+    """Search and retrieve product manufacturers.
+
+    Args:
+        limit: Maximum number of manufacturers to return (default: 100, max: 500)
+
+    Note: DigiKey has thousands of manufacturers. Use this for general browsing.
+    For specific searches, use manufacturer_id filter in keyword_search instead.
+    """
+    if limit > 500:
+        logger.warning(f"Limit {limit} exceeds maximum of 500, capping at 500")
+        limit = 500
+
     url = f"{API_BASE}/products/v4/search/manufacturers"
     headers = _get_headers()
-    return _make_request("GET", url, headers)
+    result = _make_request("GET", url, headers)
+
+    # Limit the results to prevent context overflow
+    if isinstance(result, list) and len(result) > limit:
+        logger.info(f"Limiting manufacturers from {len(result)} to {limit}")
+        result = result[:limit]
+    elif isinstance(result, dict) and "Manufacturers" in result and len(result["Manufacturers"]) > limit:
+        logger.info(f"Limiting manufacturers from {len(result['Manufacturers'])} to {limit}")
+        result["Manufacturers"] = result["Manufacturers"][:limit]
+
+    return result
 
 @mcp.tool()
-def search_categories():
-    """Search and retrieve all product categories."""
+def search_categories(limit: int = 100):
+    """Search and retrieve product categories.
+
+    Args:
+        limit: Maximum number of categories to return (default: 100, max: 500)
+
+    Note: DigiKey has thousands of categories. Use this for general browsing.
+    For specific searches, use category_id filter in keyword_search instead.
+    """
+    if limit > 500:
+        logger.warning(f"Limit {limit} exceeds maximum of 500, capping at 500")
+        limit = 500
+
     url = f"{API_BASE}/products/v4/search/categories"
     headers = _get_headers()
-    return _make_request("GET", url, headers)
+    result = _make_request("GET", url, headers)
+
+    # Limit the results to prevent context overflow
+    if isinstance(result, list) and len(result) > limit:
+        logger.info(f"Limiting categories from {len(result)} to {limit}")
+        result = result[:limit]
+    elif isinstance(result, dict) and "Categories" in result and len(result["Categories"]) > limit:
+        logger.info(f"Limiting categories from {len(result['Categories'])} to {limit}")
+        result["Categories"] = result["Categories"][:limit]
+
+    return result
 
 @mcp.tool()
 def get_category_by_id(category_id: int):
@@ -174,35 +305,64 @@ def get_category_by_id(category_id: int):
     return _make_request("GET", url, headers)
 
 @mcp.tool()
-def search_product_substitutions(product_number: str, limit: int = 10, search_options: str = None, exclude_marketplace: bool = False):
+def search_product_substitutions(product_number: str, limit: int = 10, search_options: str = None, exclude_marketplace: bool = False, compact: bool = True):
     """Search for product substitutions for a given product.
-    
+
     Args:
         product_number: The product to get substitutions for
-        limit: Number of substitutions (default: 10)
+        limit: Number of substitutions (default: 10, max: 50)
         search_options: Filters like LeadFree,RoHSCompliant,InStock
         exclude_marketplace: Exclude marketplace products (default: False)
+        compact: Return compact results with only essential fields (default: True)
     """
+    if limit > 50:
+        logger.warning(f"Limit {limit} exceeds maximum of 50, capping at 50")
+        limit = 50
+
     url = f"{API_BASE}/products/v4/search/{product_number}/substitutions"
     headers = _get_headers()
-    
+
     params = {"limit": limit, "excludeMarketPlaceProducts": exclude_marketplace}
     if search_options:
         params["searchOptionList"] = search_options
-    
+
     url += "?" + "&".join([f"{k}={v}" for k, v in params.items()])
-    return _make_request("GET", url, headers)
+    result = _make_request("GET", url, headers)
+
+    # Apply compaction to substitution results
+    if compact and isinstance(result, dict) and "Products" in result:
+        result["Products"] = [_compact_product(p) for p in result["Products"]]
+
+    return result
 
 @mcp.tool()
-def get_product_media(product_number: str):
+def get_product_media(product_number: str, max_items_per_type: int = 10):
     """Get media (images, documents, videos) for a product.
-    
+
     Args:
         product_number: The product to get media for
+        max_items_per_type: Maximum items to return per media type (default: 10, max: 50)
+
+    Note: Products can have dozens of photos, documents, and videos. This limit
+    prevents context overflow by capping each media type separately.
     """
+    if max_items_per_type > 50:
+        logger.warning(f"max_items_per_type {max_items_per_type} exceeds 50, capping at 50")
+        max_items_per_type = 50
+
     url = f"{API_BASE}/products/v4/search/{product_number}/media"
     headers = _get_headers()
-    return _make_request("GET", url, headers)
+    result = _make_request("GET", url, headers)
+
+    # Limit each media type to prevent context bloat
+    if isinstance(result, dict):
+        for media_type in ["Photos", "Documents", "Videos"]:
+            if media_type in result and isinstance(result[media_type], list):
+                if len(result[media_type]) > max_items_per_type:
+                    logger.info(f"Limiting {media_type} from {len(result[media_type])} to {max_items_per_type}")
+                    result[media_type] = result[media_type][:max_items_per_type]
+
+    return result
 
 @mcp.tool()
 def get_product_pricing(product_number: str, customer_id: str = "0", requested_quantity: int = 1):

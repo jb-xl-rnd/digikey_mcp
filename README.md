@@ -404,6 +404,41 @@ claude --debug
 
 ---
 
+## Context Optimization
+
+The MCP server includes built-in context optimization to prevent flooding Claude with large responses:
+
+### Automatic Limits
+- **Search results:** Max 50 products (default: 5)
+- **Manufacturers/Categories:** Max 500 items (default: 100)
+- **Substitutions:** Max 50 products (default: 10)
+- **Media items:** Max 50 per type (default: 10)
+
+### Compact Mode
+Most search tools include a `compact` parameter (default: `True`) that returns only essential fields:
+- Part numbers and manufacturer
+- Description and pricing
+- Stock availability and URLs
+- Excludes verbose specifications and nested objects
+- Automatically omits null/empty fields to save tokens
+
+**Enable compact mode** (default for searches):
+```
+Search for 10kΩ resistors
+```
+
+**Disable for full details when needed**:
+```
+Search for 10kΩ resistors with compact=False
+Get full details for part 296-8875-1-ND with compact=False
+```
+
+### Best Practices
+1. Use compact mode for general searches (enabled by default)
+2. Use specific filters (`manufacturer_id`, `category_id`) instead of browsing all
+3. Request full details only when specifications are needed
+4. Keep search limits reasonable (5-10 for most queries)
+
 ## API Rate Limits
 
 DigiKey's API has rate limits:

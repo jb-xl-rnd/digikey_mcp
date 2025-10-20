@@ -27,46 +27,36 @@ success() {
     echo -e "${GREEN}SUCCESS:${NC} $1" >&2
 }
 
-# Check for required environment variables or .env file
+# Check for required environment variables from MCP config
 if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
-    # Check if .env file exists
-    if [ -f "$SCRIPT_DIR/.env" ]; then
-        success "Using credentials from .env file"
-    else
-        error "DigiKey API credentials not found!"
-        echo ""
-        echo "Credentials should be configured in your Claude config files or .env file."
-        echo ""
-        echo "📝 For Claude Desktop, edit:"
-        echo "   ~/Library/Application Support/Claude/claude_desktop_config.json"
-        echo ""
-        echo "📝 For Claude Code, edit:"
-        echo "   ~/.claude.json"
-        echo ""
-        echo "Add your credentials to the 'env' section:"
-        echo ""
-        echo '  "digikey": {'
-        echo '    "command": "/path/to/run_digikey.sh",'
-        echo '    "env": {'
-        echo '      "CLIENT_ID": "your_actual_client_id_here",'
-        echo '      "CLIENT_SECRET": "your_actual_secret_here",'
-        echo '      "USE_SANDBOX": "false"'
-        echo '    }'
-        echo '  }'
-        echo ""
-        echo "Or create a .env file in the project directory:"
-        echo "   $SCRIPT_DIR/.env"
-        echo ""
-        echo "🔑 To get DigiKey API credentials:"
-        echo "   1. Visit https://developer.digikey.com/"
-        echo "   2. Create an account and sign in"
-        echo "   3. Create a new application"
-        echo "   4. Copy your CLIENT_ID and CLIENT_SECRET"
-        echo ""
-        echo "⚠️  SECURITY: Credentials are stored locally and never committed to git."
-        echo ""
-        exit 1
-    fi
+    error "DigiKey API credentials not found!"
+    echo "" >&2
+    echo "Credentials must be configured in your Claude config files." >&2
+    echo "" >&2
+    echo "📝 For Claude Desktop, edit:" >&2
+    echo "   ~/Library/Application Support/Claude/claude_desktop_config.json" >&2
+    echo "" >&2
+    echo "📝 For Claude Code, edit:" >&2
+    echo "   ~/.claude.json" >&2
+    echo "" >&2
+    echo "Add your credentials to the 'env' section of the digikey server:" >&2
+    echo "" >&2
+    echo '  "digikey": {' >&2
+    echo '    "command": "/Users/jb/Auto-Deploy-Everything/digikey-MCP/run_digikey.sh",' >&2
+    echo '    "env": {' >&2
+    echo '      "CLIENT_ID": "your_actual_client_id_here",' >&2
+    echo '      "CLIENT_SECRET": "your_actual_secret_here",' >&2
+    echo '      "USE_SANDBOX": "false"' >&2
+    echo '    }' >&2
+    echo '  }' >&2
+    echo "" >&2
+    echo "🔑 To get DigiKey API credentials:" >&2
+    echo "   1. Visit https://developer.digikey.com/" >&2
+    echo "   2. Create an account and sign in" >&2
+    echo "   3. Create a new application" >&2
+    echo "   4. Copy your CLIENT_ID and CLIENT_SECRET" >&2
+    echo "" >&2
+    exit 1
 fi
 
 # Credentials are set (output to stderr for MCP compatibility)
